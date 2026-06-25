@@ -1,4 +1,5 @@
 VinDR/
+CMD/
 **/__pycache__/**
 **/checkpoints/**
 **/processed/**
