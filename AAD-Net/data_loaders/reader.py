@@ -39,21 +39,20 @@ class MammographyLoader(Dataset):
             group = group.copy()
             birads_values = group["birads_int"].unique()
 
-            if cfg.ignore_bi_rads in birads_values:
-                continue
-
             has_normal = any(b in cfg.normal_bi_rads for b in birads_values)
             has_abnormal = any(b in cfg.abnormal_bi_rads for b in birads_values)
 
-            if has_normal and has_abnormal:
+            # Skip if no normal AND no abnormal (e.g. BI-RADS 3 only or all NaN)
+            if not has_normal and not has_abnormal:
                 continue
 
+            # If patient has at least one abnormal view in ANY laterality,
+            # label the whole patient as abnormal.  This captures cases where
+            # one breast is clean and the other is malignant — still cancer.
             if has_abnormal:
                 label = 1
-            elif has_normal:
-                label = 0
             else:
-                continue
+                label = 0
 
             view_map = {}
             for _, row in group.iterrows():
@@ -82,22 +81,27 @@ class MammographyLoader(Dataset):
         self._build_image_path_cache()
 
     def _build_image_path_cache(self):
-        metadata_df = pd.read_csv(self.cfg.metadata_csv)
-        uid_to_path = {}
-        for _, row in metadata_df.iterrows():
-            uid = row["SOP Instance UID"]
-            series_uid = row["Series Instance UID"]
-            uid_to_path[uid] = series_uid
-        self._uid_to_series = uid_to_path
+        df = pd.read_csv(self.cfg.breast_annot_csv)
+        uid_to_study = {row["image_id"]: row["study_id"] for _, row in df.iterrows()}
+        self._uid_to_study = uid_to_study
 
     def _find_image_file(self, image_id: str) -> Path:
-        for ext in [".dcm", ".png", ".jpg", ".tif"]:
-            p = self.cfg.raw_data_dir / "images" / image_id[:2] / f"{image_id}{ext}"
-            if p.exists():
-                return p
-            p = self.cfg.raw_data_dir / image_id[:2] / f"{image_id}{ext}"
-            if p.exists():
-                return p
+        study_uid = self._uid_to_study.get(image_id)
+        candidates = []
+        if study_uid:
+            candidates.append(self.cfg.raw_data_dir / "images" / study_uid)
+        candidates.append(self.cfg.raw_data_dir / "images" / image_id[:2])
+        candidates.append(self.cfg.raw_data_dir / image_id[:2])
+        for folder in candidates:
+            if not folder.exists():
+                continue
+            for ext in [".dicom", ".dcm", ".png", ".jpg", ".tif"]:
+                p = folder / f"{image_id}{ext}"
+                if p.exists():
+                    return p
+            for p in folder.glob(f"{image_id}.*"):
+                if p.is_file():
+                    return p
         return None
 
     def _load_image(self, image_id: str) -> torch.Tensor:
@@ -107,12 +111,27 @@ class MammographyLoader(Dataset):
             return torch.zeros(1, h, w)
 
         try:
-            img = PIL.Image.open(path)
+            if path.suffix.lower() in (".dcm", ".dicom"):
+                import pydicom
+                import numpy as np
+                ds = pydicom.dcmread(str(path))
+                arr = ds.pixel_array
+                if arr.ndim == 3:
+                    arr = arr[0]
+                arr = arr.astype(np.float32)
+                lo, hi = float(arr.min()), float(arr.max())
+                if hi > lo:
+                    arr = (arr - lo) / (hi - lo)
+                else:
+                    arr = np.zeros_like(arr)
+                img = PIL.Image.fromarray((arr * 255).astype(np.uint8), mode="L")
+            else:
+                img = PIL.Image.open(path)
             if img.mode != "L":
                 img = img.convert("L")
             img = img.resize(self.cfg.target_size, PIL.Image.BILINEAR)
             import numpy as np
-            arr = torch.from_numpy(np.asarray(img)).float() / 255.0
+            arr = torch.from_numpy(np.asarray(img).copy()).float() / 255.0
             return arr.unsqueeze(0)
         except Exception:
             h, w = self.cfg.target_size[1], self.cfg.target_size[0]

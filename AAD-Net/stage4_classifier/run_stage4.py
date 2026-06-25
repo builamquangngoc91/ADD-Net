@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from tqdm import tqdm
 
 import sys
 import os
@@ -33,12 +34,20 @@ def _clip_gradients(model: nn.Module, max_norm: float = 1.0):
 
 
 def _flatten_pseudo_labels(cc_map: torch.Tensor, mlo_map: torch.Tensor, patch_size: int, stride: int) -> torch.Tensor:
-    B = cc_map.size(0)
+    if cc_map.dim() == 2:
+        cc_map = cc_map.unsqueeze(0).unsqueeze(0)
+    elif cc_map.dim() == 3:
+        cc_map = cc_map.unsqueeze(0)
+    if mlo_map.dim() == 2:
+        mlo_map = mlo_map.unsqueeze(0).unsqueeze(0)
+    elif mlo_map.dim() == 3:
+        mlo_map = mlo_map.unsqueeze(0)
     cc_patches = F.unfold(cc_map, kernel_size=patch_size, stride=stride)
     mlo_patches = F.unfold(mlo_map, kernel_size=patch_size, stride=stride)
-    all_patches = torch.cat([cc_patches, mlo_patches], dim=1)
-    labels_flat = all_patches.transpose(1, 2).reshape(B, -1)
-    return labels_flat
+    B, _, num_patches = cc_patches.shape
+    cc_labels = cc_patches.mean(dim=1).reshape(B, num_patches)
+    mlo_labels = mlo_patches.mean(dim=1).reshape(B, num_patches)
+    return torch.cat([cc_labels, mlo_labels], dim=1)
 
 
 def run_stage4(cfg: PipelineConfig = None):
@@ -73,6 +82,15 @@ def run_stage4(cfg: PipelineConfig = None):
     patch_h = (512 - cfg.patch_size) // cfg.stride + 1
     patch_w = (1024 - cfg.patch_size) // cfg.stride + 1
 
+    print(f"[Stage 4] Training on {len(files)} patients, {cfg.cls_epochs} epochs")
+
+    global_pbar = tqdm(
+        total=cfg.cls_epochs,
+        desc="Stage 4 (epochs)",
+        unit="epoch",
+        ncols=80,
+    )
+
     for epoch in range(cfg.cls_epochs):
         student.train()
         epoch_total = 0.0
@@ -83,10 +101,21 @@ def run_stage4(cfg: PipelineConfig = None):
 
         optimizer.zero_grad()
 
-        for fpath in files:
-            patient_id = torch.load(fpath, map_location="cpu", weights_only=False)["patient_id"]
+        epoch_pbar = tqdm(
+            files,
+            desc=f"  Epoch {epoch + 1}/{cfg.cls_epochs}",
+            unit="patient",
+            ncols=80,
+            leave=False,
+        )
+
+        for fpath in epoch_pbar:
             batch = torch.load(fpath, map_location=cfg.device, weights_only=False)
+            patient_id = batch["patient_id"]
+            if isinstance(patient_id, list):
+                patient_id = "_".join(patient_id)
             label = batch["label"].to(cfg.device)
+            print(f"[DEBUG Stage4] patient={patient_id} label.shape={tuple(label.shape)} label.dtype={label.dtype} label={label.item() if label.numel()==1 else label}")
 
             pl_entry = pseudo_labels.get(patient_id, None)
             if pl_entry is None:
@@ -117,11 +146,13 @@ def run_stage4(cfg: PipelineConfig = None):
             logits_student = student(x_cc, x_mlo, cc_map, mlo_map)
             logits_teacher = teacher(x_cc, x_mlo, cc_map, mlo_map)
 
-            loss_ce = ce_loss_fn(logits_student, label)
+            print(f"[DEBUG Stage4] logits_student.shape={tuple(logits_student.shape)} label.shape={tuple(label.shape)} label.dtype={label.dtype}")
+            ce_target = label.long().view(-1)
+            loss_ce = ce_loss_fn(logits_student, ce_target)
 
             log_probs_student = F.log_softmax(logits_student, dim=-1)
-            log_probs_teacher = F.log_softmax(logits_teacher, dim=-1)
-            loss_consistency = F.kl_div(log_probs_student, log_probs_teacher, reduction="batchmean")
+            probs_teacher = F.softmax(logits_teacher, dim=-1).clamp(min=1e-8)
+            loss_consistency = F.kl_div(log_probs_student, probs_teacher, reduction="batchmean")
 
             total_loss = (
                 cfg.supercon_weight * loss_supcon
@@ -137,11 +168,15 @@ def run_stage4(cfg: PipelineConfig = None):
             epoch_cons += loss_consistency.item()
             n_batches += 1
 
+            epoch_pbar.set_postfix({"loss": f"{total_loss.item():.4f}"})
+
             if n_batches % cfg.accumulation_steps == 0:
                 _clip_gradients(student, cfg.clip_grad_norm)
                 optimizer.step()
                 optimizer.zero_grad()
                 _update_ema(teacher, student, cfg.ema_decay)
+
+        epoch_pbar.close()
 
         if n_batches % cfg.accumulation_steps != 0:
             _clip_gradients(student, cfg.clip_grad_norm)
@@ -153,18 +188,19 @@ def run_stage4(cfg: PipelineConfig = None):
         avg_ce = epoch_ce / max(n_batches, 1)
         avg_cons = epoch_cons / max(n_batches, 1)
 
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(
-                f"  Epoch {epoch + 1}/{cfg.cls_epochs} | "
-                f"Total: {avg_total:.4f} | "
-                f"SupCon: {avg_supcon:.4f} | "
-                f"CE: {avg_ce:.4f} | "
-                f"Consistency: {avg_cons:.4f}"
-            )
+        global_pbar.set_postfix({
+            "loss": f"{avg_total:.4f}",
+            "supcon": f"{avg_supcon:.4f}",
+            "ce": f"{avg_ce:.4f}",
+            "cons": f"{avg_cons:.4f}",
+        })
+        global_pbar.update(1)
+
+    global_pbar.close()
 
     ckpt_path = cfg.classifier_ckpt
     torch.save(student.state_dict(), ckpt_path)
-    print(f"[Stage 4] Classifier saved to {ckpt_path}")
+    print(f"[Stage 4] Saved: {ckpt_path}")
     return ckpt_path
 
 

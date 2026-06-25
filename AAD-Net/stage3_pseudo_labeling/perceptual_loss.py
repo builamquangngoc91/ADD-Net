@@ -26,6 +26,8 @@ class VGG16FeatureExtractor(nn.Module):
         self.register_buffer = lambda name, tensor: setattr(self, name, tensor)
 
     def forward(self, x: torch.Tensor) -> dict:
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
         results = {}
         for i in range(1, 6):
             layer_idx = _VGG_LAYER_MAP.get(i)
@@ -51,6 +53,8 @@ class MedLPIPS(nn.Module):
         self.feat_extractor = feat_extractor
 
     def extract_patch_features(self, image: torch.Tensor, patch_size: int = 128, stride: int = 64) -> torch.Tensor:
+        if image.dim() == 3:
+            image = image.unsqueeze(0)
         B, C, H, W = image.shape
         patches = F.unfold(image, kernel_size=patch_size, stride=stride)
         num_patches = patches.shape[2]
@@ -81,6 +85,8 @@ def compute_med_lpips_maps(
     if feat_extractor is None:
         feat_extractor = VGG16FeatureExtractor()
     lpips_model = MedLPIPS(feat_extractor)
+    lpips_model.to(l_cc.device)
+    lpips_model.eval()
 
     patch_h = (512 - patch_size) // stride + 1
     patch_w = (1024 - patch_size) // stride + 1

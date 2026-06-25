@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 from sklearn.mixture import GaussianMixture
 import numpy as np
+import warnings
+from sklearn.exceptions import ConvergenceWarning
 
 
 def _compute_z_scores(scores: torch.Tensor, mean_ref: float = None, std_ref: float = None) -> torch.Tensor:
@@ -31,11 +33,13 @@ def _find_gmm_threshold(gmm: GaussianMixture, X: np.ndarray) -> float:
     sorted_idx = np.argsort(means)
     m1, s1 = means[sorted_idx[0]], stds[sorted_idx[0]]
     m2, s2 = means[sorted_idx[1]], stds[sorted_idx[1]]
+    if s1 < 1e-8 or s2 < 1e-8 or np.abs(s1 - s2) < 1e-8:
+        return float(np.mean(means))
     a = 1 / (2 * s1 ** 2) - 1 / (2 * s2 ** 2)
     b = m2 / (s2 ** 2) - m1 / (s1 ** 2)
     c = -m1 ** 2 / (2 * s1 ** 2) + m2 ** 2 / (2 * s2 ** 2) + np.log(s2 / s1)
     discriminant = b ** 2 - 4 * a * c
-    if discriminant < 0:
+    if discriminant < 0 or np.abs(2 * a) < 1e-8:
         return float(np.mean(means))
     t1 = (-b + np.sqrt(discriminant)) / (2 * a)
     t2 = (-b - np.sqrt(discriminant)) / (2 * a)
@@ -62,11 +66,15 @@ def calculate_gmm_pseudo_labels(
     z_mlo_np = z_mlo.flatten().unsqueeze(1).cpu().numpy()
 
     gmm_cc = GaussianMixture(n_components=components, random_state=42)
-    gmm_cc.fit(z_cc_np)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=ConvergenceWarning)
+        gmm_cc.fit(z_cc_np)
     threshold_cc = _find_gmm_threshold(gmm_cc, z_cc_np)
 
     gmm_mlo = GaussianMixture(n_components=components, random_state=42)
-    gmm_mlo.fit(z_mlo_np)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=ConvergenceWarning)
+        gmm_mlo.fit(z_mlo_np)
     threshold_mlo = _find_gmm_threshold(gmm_mlo, z_mlo_np)
 
     p_cc = _apply_scaled_sigmoid(z_cc, threshold_cc, sigmoid_temp)

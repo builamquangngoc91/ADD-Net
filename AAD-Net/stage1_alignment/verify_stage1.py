@@ -1,11 +1,13 @@
 """Stage 1 - Verifier: sanity-check aligned .pt files before Stage 2."""
 
 import json
-
-import torch
-
+import os
 import sys
-sys.path.insert(0, str(__file__).rsplit("/", 1)[0] if "/" in __file__ else ".")
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from tqdm import tqdm
+import torch
 
 from config.config import PipelineConfig
 
@@ -25,11 +27,9 @@ def verify_stage1(cfg: PipelineConfig = None):
     if len(files) == 0:
         raise ValueError("No aligned files in manifest.")
 
-    check_count = min(5, len(files))
     errors = []
 
-    for i in range(check_count):
-        path = files[i]
+    for path in tqdm(files, desc="Verify Stage 1", unit="file", ncols=80):
         batch = torch.load(path, map_location=cfg.device, weights_only=False)
 
         try:
@@ -52,7 +52,7 @@ def verify_stage1(cfg: PipelineConfig = None):
             print(err)
         raise AssertionError("Stage 1 verification failed.")
 
-    print(f"[Stage 1] Verified {check_count}/{len(files)} files. All assertions passed.")
+    print(f"[Stage 1] Verified {len(files)} files. All assertions passed.")
     print("Stage 1 Data Verified.")
     return True
 

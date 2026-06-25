@@ -8,6 +8,7 @@ and applies GMM-based soft labeling.
 import json
 import numpy as np
 import torch
+from tqdm import tqdm
 
 import sys
 import os
@@ -53,9 +54,14 @@ def run_stage3(cfg: PipelineConfig = None):
     all_soft_labels = {}
     files = manifest["aligned_files"]
 
-    for idx, fpath in enumerate(files):
-        patient_id = torch.load(fpath, map_location="cpu", weights_only=False)["patient_id"]
+    print(f"[Stage 3] Processing {len(files)} patients...")
+
+    pbar = tqdm(files, desc="Stage 3", unit="patient", ncols=80)
+    for idx, fpath in enumerate(pbar):
         batch = torch.load(fpath, map_location=cfg.device, weights_only=False)
+        patient_id = batch["patient_id"]
+        if isinstance(patient_id, list):
+            patient_id = "_".join(patient_id)
 
         l_cc = batch["L_CC"].to(cfg.device)
         r_cc = batch["R_CC"].to(cfg.device)
@@ -86,12 +92,13 @@ def run_stage3(cfg: PipelineConfig = None):
             "mlo_map": labels["mlo_map"].cpu().numpy(),
         }
 
-        if (idx + 1) % 500 == 0:
-            print(f"  Processed {idx + 1}/{len(files)} patients...")
+        pbar.set_postfix({"done": idx + 1})
+
+    pbar.close()
 
     save_path = cfg.stage3_pseudolabel_dir / "pseudo_labels.npy"
     np.save(save_path, all_soft_labels, allow_pickle=True)
-    print(f"[Stage 3] Pseudo-labels saved to {save_path} ({len(all_soft_labels)} patients)")
+    print(f"[Stage 3] Saved {len(all_soft_labels)} entries to {save_path}")
     return save_path
 
 

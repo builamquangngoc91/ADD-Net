@@ -19,6 +19,8 @@ class PatchFeatureExtractor(nn.Module):
         self.feature_dim = resnet.fc.in_features
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
         b = self.backbone(x)
         return b.view(b.size(0), -1)
 
@@ -37,6 +39,8 @@ class AdaptiveMultiViewClassifier(nn.Module):
         )
 
     def _extract_patch_features(self, image: torch.Tensor, patch_size: int = 128, stride: int = 64) -> torch.Tensor:
+        if image.dim() == 3:
+            image = image.unsqueeze(0)
         B, C, H, W = image.shape
         patches = F.unfold(image, kernel_size=patch_size, stride=stride)
         num_patches = patches.shape[2]

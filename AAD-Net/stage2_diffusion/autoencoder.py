@@ -16,7 +16,7 @@ class DummyEncoder(nn.Module):
         self.conv1 = nn.Conv2d(in_channels, 32, 3, stride=2, padding=1)
         self.conv2 = nn.Conv2d(32, 64, 3, stride=2, padding=1)
         self.conv3 = nn.Conv2d(64, 128, 3, stride=2, padding=1)
-        self.conv4 = nn.Conv2d(128, latent_channels, 3, stride=2, padding=1)
+        self.conv4 = nn.Conv2d(128, latent_channels, 3, stride=1, padding=1)
         self.latent_h = latent_h
         self.latent_w = latent_w
         self.latent_channels = latent_channels
@@ -38,7 +38,7 @@ class DummyDecoder(nn.Module):
         self.conv1 = nn.ConvTranspose2d(latent_channels, 128, 3, stride=2, padding=1, output_padding=1)
         self.conv2 = nn.ConvTranspose2d(128, 64, 3, stride=2, padding=1, output_padding=1)
         self.conv3 = nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1)
-        self.conv4 = nn.ConvTranspose2d(32, out_channels, 3, stride=2, padding=1, output_padding=1)
+        self.conv4 = nn.ConvTranspose2d(32, out_channels, 3, stride=1, padding=1)
         self.out_channels = out_channels
 
     def forward(self, z):
@@ -64,6 +64,8 @@ class AutoencoderWrapper(nn.Module):
         self._dummy = True
 
     def encode(self, x):
+        if x.dim() == 3:
+            x = x.unsqueeze(0)
         return self.encoder(x)
 
     def decode(self, z):

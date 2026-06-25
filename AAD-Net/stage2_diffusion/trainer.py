@@ -18,13 +18,10 @@ class LatentDiffusionTrainer:
         alphas = 1.0 - betas
         alphas_cumprod = torch.cumprod(alphas, dim=0)
 
-        self.register_buffer("alphas", alphas.to(device))
-        self.register_buffer("alphas_cumprod", alphas_cumprod.to(device))
-        self.register_buffer("sqrt_alphas_cumprod", (alphas_cumprod ** 0.5).to(device))
-        self.register_buffer(
-            "sqrt_one_minus_alphas_cumprod",
-            ((1.0 - alphas_cumprod) ** 0.5).to(device),
-        )
+        self.alphas = alphas.to(device)
+        self.alphas_cumprod = alphas_cumprod.to(device)
+        self.sqrt_alphas_cumprod = (alphas_cumprod ** 0.5).to(device)
+        self.sqrt_one_minus_alphas_cumprod = ((1.0 - alphas_cumprod) ** 0.5).to(device)
 
     def train_step(
         self,
@@ -44,8 +41,8 @@ class LatentDiffusionTrainer:
 
         noise = torch.randn_like(z_r)
 
-        sqrt_alpha_t = self.sqrt_alphas_cumprod.to(self.device)[timesteps].view(B, 1, 1, 1)
-        sqrt_one_minus_alpha_t = self.sqrt_one_minus_alphas_cumprod.to(self.device)[timesteps].view(B, 1, 1, 1)
+        sqrt_alpha_t = self.sqrt_alphas_cumprod[timesteps].view(B, 1, 1, 1)
+        sqrt_one_minus_alpha_t = self.sqrt_one_minus_alphas_cumprod[timesteps].view(B, 1, 1, 1)
         z_r_noisy = sqrt_alpha_t * z_r + sqrt_one_minus_alpha_t * noise
 
         pred_noise = diff_unet(z_r_noisy, timesteps, condition=z_l)

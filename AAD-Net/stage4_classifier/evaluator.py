@@ -1,6 +1,6 @@
-"""Stage 4 - Evaluator: MedIA-standard metrics.
+"""Stage 4 - Evaluator: MedIA-standard + classification metrics.
 
-Computes AUC and Sensitivity at Specificity thresholds on the validation set.
+Computes AUC, Sensitivity at Specificity, Accuracy, Precision, Recall, and F1.
 """
 
 import json
@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 
 import sys
@@ -40,13 +41,32 @@ def compute_Sensitivity_At_Specificity(y_pred: np.ndarray, y_true: np.ndarray, t
     return best_sens
 
 
-def compute_metrics(y_pred: np.ndarray, y_true: np.ndarray):
+def compute_metrics(y_pred: np.ndarray, y_true: np.ndarray, threshold: float = 0.5):
     auc = compute_AUC(y_pred, y_true)
     sens_95 = compute_Sensitivity_At_Specificity(y_pred, y_true, target_spec=0.95)
-    return {"AUC": auc, "Sensitivity@95%": sens_95}
+
+    y_binary = (y_pred >= threshold).astype(int)
+    tp = ((y_binary == 1) & (y_true == 1)).sum()
+    fn = ((y_binary == 0) & (y_true == 1)).sum()
+    fp = ((y_binary == 1) & (y_true == 0)).sum()
+    tn = ((y_binary == 0) & (y_true == 0)).sum()
+
+    acc = (tp + tn) / max(tp + fn + fp + tn, 1)
+    prec = tp / max(tp + fp, 1)
+    rec = tp / max(tp + fn, 1)
+    f1 = 2.0 * prec * rec / max(prec + rec, 1e-8)
+
+    return {
+        "AUC": auc,
+        "Sensitivity@95%": sens_95,
+        "Accuracy": acc,
+        "Precision": prec,
+        "Recall": rec,
+        "F1": f1,
+    }
 
 
-def evaluate(cfg: PipelineConfig = None):
+def evaluate(cfg: PipelineConfig = None, show_progress: bool = False):
     if cfg is None:
         cfg = PipelineConfig()
 
@@ -75,8 +95,10 @@ def evaluate(cfg: PipelineConfig = None):
     all_preds = []
     all_labels = []
 
+    iterator = tqdm(val_files, desc="Stage 4 Eval", unit="patient", ncols=80) if show_progress else val_files
+
     with torch.no_grad():
-        for fpath in val_files:
+        for fpath in iterator:
             patient_id = torch.load(fpath, map_location="cpu", weights_only=False)["patient_id"]
             batch = torch.load(fpath, map_location=cfg.device, weights_only=False)
             label = batch["label"].item()
@@ -109,6 +131,17 @@ def evaluate(cfg: PipelineConfig = None):
 
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
+
+    n_pos = int((all_labels == 1).sum())
+    n_neg = int((all_labels == 0).sum())
+    print(f"[DEBUG Stage4 Eval] label distribution: pos={n_pos}, neg={n_neg}, total={len(all_labels)}")
+    print(f"[DEBUG Stage4 Eval] pred prob stats: min={all_preds.min():.4f}, max={all_preds.max():.4f}, mean={all_preds.mean():.4f}, frac>=0.5={(all_preds >= 0.5).mean():.4f}")
+    pos_probs = all_preds[all_labels == 1] if n_pos > 0 else all_preds[:0]
+    neg_probs = all_preds[all_labels == 0] if n_neg > 0 else all_preds[:0]
+    if n_pos > 0:
+        print(f"[DEBUG Stage4 Eval] pred probs for positives: min={pos_probs.min():.4f}, max={pos_probs.max():.4f}, mean={pos_probs.mean():.4f}")
+    if n_neg > 0:
+        print(f"[DEBUG Stage4 Eval] pred probs for negatives: min={neg_probs.min():.4f}, max={neg_probs.max():.4f}, mean={neg_probs.mean():.4f}")
 
     metrics = compute_metrics(all_preds, all_labels)
     return metrics

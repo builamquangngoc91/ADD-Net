@@ -1,1 +1,5 @@
 VinDR/
+**/__pycache__/**
+**/checkpoints/**
+**/processed/**
+**/weights/**

@@ -100,12 +100,16 @@ class UpBlock(nn.Module):
         self.res = ResBlock(in_ch, time_emb_dim)
         self.cross_attn = CrossAttention(in_ch, cond_ch)
         self.up = nn.ConvTranspose2d(in_ch, out_ch, 4, stride=2, padding=1)
+        self.skip_proj = nn.Conv2d(in_ch, in_ch, 1)
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor, t_emb: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        if skip.shape[2:] != x.shape[2:]:
+            skip = F.interpolate(skip, size=x.shape[2:], mode="bilinear", align_corners=False)
+        skip = self.skip_proj(skip)
+        x = x + skip
         x = self.res(x, t_emb)
         x = x + self.cross_attn(x, cond)
         x = self.up(x)
-        x = torch.cat([x, skip], dim=1)
         return x
 
 
@@ -135,34 +139,46 @@ class CrossLateralDiffusionUNet(nn.Module):
         self.down1 = DownBlock(base_channels, base_channels, in_channels, time_emb_dim)
         self.down2 = DownBlock(base_channels, base_channels * 2, in_channels, time_emb_dim)
         self.down3 = DownBlock(base_channels * 2, base_channels * 2, in_channels, time_emb_dim)
+        self.down4 = DownBlock(base_channels * 2, base_channels * 2, in_channels, time_emb_dim)
 
         self.bottleneck = ResBlock(base_channels * 2, time_emb_dim)
 
         self.up1 = UpBlock(base_channels * 2, base_channels * 2, in_channels, time_emb_dim)
-        self.up2 = UpBlock(base_channels * 4, base_channels, in_channels, time_emb_dim)
-        self.up3 = UpBlock(base_channels * 2, base_channels, in_channels, time_emb_dim)
+        self.up2 = UpBlock(base_channels * 2, base_channels, in_channels, time_emb_dim)
+        self.up3 = UpBlock(base_channels, base_channels, in_channels, time_emb_dim)
+        self.up4 = UpBlock(base_channels, base_channels, in_channels, time_emb_dim)
 
+        final_channels = base_channels
         self.final = nn.Sequential(
-            nn.GroupNorm(8, base_channels),
+            nn.GroupNorm(8, final_channels),
             nn.SiLU(),
-            nn.Conv2d(base_channels, out_channels, 3, padding=1),
+            nn.Conv2d(final_channels, out_channels, 3, padding=1),
         )
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
         t_emb = self.time_emb(t)
 
+        if condition.dim() == 3:
+            condition = condition.unsqueeze(0)
+
         x = torch.cat([x, condition], dim=1)
         x = self.first(x)
 
-        x, s1 = self.down1(x, t_emb, condition)
-        x, s2 = self.down2(x, t_emb, condition)
-        x, s3 = self.down3(x, t_emb, condition)
+        s1 = x
+        x, _ = self.down1(x, t_emb, condition)
+        s2 = x
+        x, _ = self.down2(x, t_emb, condition)
+        s3 = x
+        x, _ = self.down3(x, t_emb, condition)
+        s4 = x
+        x, _ = self.down4(x, t_emb, condition)
 
         x = self.bottleneck(x, t_emb)
 
-        x = self.up1(x, s3, t_emb, condition)
-        x = self.up2(x, s2, t_emb, condition)
-        x = self.up3(x, s1, t_emb, condition)
+        x = self.up1(x, s4, t_emb, condition)
+        x = self.up2(x, s3, t_emb, condition)
+        x = self.up3(x, s2, t_emb, condition)
+        x = self.up4(x, s1, t_emb, condition)
 
         x = self.final(x)
         return x
