@@ -73,7 +73,7 @@ def train_epoch(model, dataloader, optimizer, loss_fn, device, scaler, gradient_
                 'scale_1': batch['patches']['scale_1'][b].to(device),
                 'scale_2': batch['patches']['scale_2'][b].to(device),
             }
-            label_b = labels[b]
+            label_b = labels[b:b+1]
 
             with autocast(enabled=scaler.is_enabled()):
                 outputs = model(patches_dict, return_feature_map=True)
@@ -128,7 +128,7 @@ def validate(model, dataloader, loss_fn, device, scaler):
                     'scale_1': batch['patches']['scale_1'][b].to(device),
                     'scale_2': batch['patches']['scale_2'][b].to(device),
                 }
-                label_b = labels[b]
+                label_b = labels[b:b+1]
 
                 with autocast(enabled=scaler.is_enabled()):
                     outputs = model(patches_dict, return_feature_map=True)
