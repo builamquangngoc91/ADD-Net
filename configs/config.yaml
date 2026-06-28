@@ -40,7 +40,7 @@ loss:
   use_focal: true
   focal_alpha: [0.75, 0.25]  # Per-class alpha; sum not required to be 1
   focal_gamma: 2.0
-  lambda_lem: 0.05
+  lambda_lem: 0.001
   lem_temperature: 0.1
   epsilon: 1e-8
 
