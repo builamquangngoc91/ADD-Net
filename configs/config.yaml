@@ -45,7 +45,7 @@ loss:
   epsilon: 1e-8
 
 training:
-  epochs: 50
+  epochs: 100
   warmup_epochs: 5
   batch_size: 1  # MIL: one bag per batch
   learning_rate: 5e-5
@@ -57,7 +57,7 @@ training:
   use_amp: true
   # Weighted sampler for class imbalance
   use_weighted_sampler: true
-  early_stopping_patience: 10
+  early_stopping_patience: 30
 
 evaluation:
   n_bootstrap: 1000

@@ -12,6 +12,8 @@ FIXES applied (plan #5, #7, #8):
 """
 import os
 import sys
+import time
+import traceback
 
 # Ensure repo root is on sys.path so `python src/train.py` works without PYTHONPATH.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -32,6 +34,25 @@ from src.config import load_config
 from src.data.dataset import MammoMultiScaleDataset
 from src.models.multi_scale_mil import MultiScaleMIL
 from src.losses.total_loss import TotalLoss
+
+
+# ---- pipeline stage logger --------------------------------------------------
+_T0 = time.time()
+
+
+def _ts() -> str:
+    """Elapsed seconds since process start, formatted as [t=12.3s]."""
+    return f"[t={time.time() - _T0:7.2f}s]"
+
+
+def stage(msg: str) -> None:
+    """Print a stage checkpoint with timestamp; always flushed."""
+    print(f"{_ts()} [stage] {msg}", flush=True)
+
+
+def stage_err(msg: str) -> None:
+    """Print an error checkpoint; always flushed."""
+    print(f"{_ts()} [stage] ERROR: {msg}", flush=True)
 
 
 def set_seed(seed: int = 42):
@@ -141,33 +162,76 @@ def validate(model, dataloader, loss_fn, device, scaler):
 
 
 def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epochs: int = None):
+    stage(f"start  pid={os.getpid()}  config={config_path}  exp_dir={experiment_dir}")
+
+    stage("set_seed(42)")
     set_seed(42)
+
+    stage("loading config ...")
     config = load_config(config_path)
+    stage(f"config loaded: data.root_dir={config.data.root_dir}  "
+          f"training.epochs={config.training.epochs}  batch_size={config.training.batch_size}  "
+          f"use_amp={config.training.use_amp}")
+
     if max_epochs is not None:
         config.training.epochs = max_epochs
+        stage(f"overrode epochs -> {config.training.epochs}")
 
+    stage(f"mkdir {experiment_dir}")
     os.makedirs(experiment_dir, exist_ok=True)
-    ckpt_dir = os.makedirs(os.path.join(experiment_dir, 'checkpoints'), exist_ok=True)
+    ckpt_dir = os.path.join(experiment_dir, 'checkpoints')
+    os.makedirs(ckpt_dir, exist_ok=True)
     log_dir = os.path.join(experiment_dir, 'logs')
     writer = SummaryWriter(log_dir)
+    stage(f"SummaryWriter -> {log_dir}")
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    # CPU/GPU selection. Set ADDNET_FORCE_CPU=1 to bypass CUDA (useful when the
+    # installed PyTorch does not support the current GPU's compute capability,
+    # which causes hard process termination with no traceback).
+    force_cpu = os.environ.get("ADDNET_FORCE_CPU", "").strip().lower() in ("1", "true", "yes")
+    use_amp = config.training.use_amp and not force_cpu
+    if force_cpu:
+        device = torch.device('cpu')
+        stage("device: cpu (forced via ADDNET_FORCE_CPU)")
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+        try:
+            cap = torch.cuda.get_device_capability(0)
+            gpu_name = torch.cuda.get_device_name(0)
+            stage(f"device: cuda  gpu={gpu_name}  sm_{cap[0]}{cap[1]}")
+            if cap[0] >= 12:
+                stage("WARNING: Blackwell-class GPU (sm_120+). "
+                      "PyTorch <2.7+cu128 will crash on first CUDA op. "
+                      "Re-run with ADDNET_FORCE_CPU=1 if that happens.")
+        except Exception as e:
+            stage_err(f"failed to query CUDA device: {e}")
+            raise
+    else:
+        device = torch.device('cpu')
+        stage("device: cpu (no CUDA available)")
 
+    stage(f"loading train dataset from {config.data.root_dir} ...")
+    t = time.time()
     train_dataset = MammoMultiScaleDataset(
         root_dir=config.data.root_dir, split='train', config=config
     )
+    stage(f"train dataset loaded: {len(train_dataset)} samples  ({time.time() - t:.1f}s)")
+
+    stage(f"loading val dataset from {config.data.root_dir} ...")
+    t = time.time()
     val_dataset = MammoMultiScaleDataset(
         root_dir=config.data.root_dir, split='val', config=config
     )
+    stage(f"val dataset loaded: {len(val_dataset)} samples  ({time.time() - t:.1f}s)")
 
     if config.training.use_weighted_sampler:
+        stage("building weighted sampler ...")
         train_sampler = get_sampler(train_dataset)
         shuffle = False
     else:
         train_sampler, shuffle = None, True
 
-    # FIXED (plan #3.7 from review): limit workers for Windows RAM safety
+    stage(f"building DataLoaders (num_workers=0, pin_memory=True) ...")
     train_loader = DataLoader(
         train_dataset, batch_size=config.training.batch_size, sampler=train_sampler, shuffle=shuffle,
         num_workers=0, pin_memory=True,
@@ -176,8 +240,22 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
         val_dataset, batch_size=config.training.batch_size, shuffle=False,
         num_workers=0, pin_memory=True,
     )
+    stage(f"DataLoaders: train={len(train_loader)} batches, val={len(val_loader)} batches")
 
-    model = MultiScaleMIL(config).to(device)
+    stage(f"building MultiScaleMIL model on {device} ...")
+    t = time.time()
+    try:
+        model = MultiScaleMIL(config).to(device)
+    except Exception as e:
+        stage_err(f"MultiScaleMIL(...) failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        raise
+    n_params = sum(p.numel() for p in model.parameters())
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    stage(f"model built: {n_trainable:,} trainable / {n_params:,} total params  "
+          f"({time.time() - t:.1f}s)")
+
+    stage("building optimizer ...")
     optimizer = optim.Adam(
         model.parameters(),
         lr=config.training.learning_rate,
@@ -187,12 +265,15 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
         optimizer, mode='min', patience=config.training.scheduler_patience,
         factor=config.training.scheduler_factor,
     )
-    scaler = GradScaler(enabled=config.training.use_amp)
+    scaler = GradScaler(enabled=use_amp)
+    stage(f"optimizer=Adam  scaler.amp_enabled={scaler.is_enabled()}")
 
+    stage("building loss fn ...")
     loss_fn = TotalLoss(
         config=config,
         warmup_epoch=config.training.warmup_epochs,
     )
+    stage("loss fn ready")
 
     # FIXED (plan #8): Track training state for resume
     start_epoch = 0
@@ -200,7 +281,7 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
     patience_counter = 0
 
     if resume_path and os.path.exists(resume_path):
-        print(f"Resuming from {resume_path}")
+        stage(f"resuming from {resume_path}")
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
@@ -208,18 +289,41 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
         start_epoch = ckpt.get('epoch', 0) + 1
         best_val_auc = ckpt.get('val_auc', 0.0)
         loss_fn.set_epoch(start_epoch)
-        print(f"Resumed epoch {start_epoch}, best AUC {best_val_auc:.4f}")
+        stage(f"resumed epoch {start_epoch}, best AUC {best_val_auc:.4f}")
+    else:
+        stage(f"starting fresh from epoch 0 (target epochs={config.training.epochs})")
 
+    stage("entering training loop")
     for epoch in range(start_epoch, config.training.epochs):
         loss_fn.set_epoch(epoch)
-        print(f"\nEpoch {epoch+1}/{config.training.epochs}")
-        print("-" * 40)
+        print(f"\n{_ts()} Epoch {epoch+1}/{config.training.epochs}", flush=True)
+        print("-" * 40, flush=True)
 
-        train_stats = train_epoch(
-            model, train_loader, optimizer, loss_fn, device, scaler,
-            gradient_clip=config.training.gradient_clip,
-        )
-        val_stats = validate(model, val_loader, loss_fn, device, scaler)
+        stage(f"epoch {epoch+1}: train phase")
+        t = time.time()
+        try:
+            train_stats = train_epoch(
+                model, train_loader, optimizer, loss_fn, device, scaler,
+                gradient_clip=config.training.gradient_clip,
+            )
+        except Exception as e:
+            stage_err(f"train_epoch failed at epoch {epoch+1}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            raise
+        stage(f"epoch {epoch+1}: train done  "
+              f"loss={train_stats['loss']:.4f}  cls={train_stats['cls_loss']:.4f}  "
+              f"lem={train_stats['lem_loss']:.4f}  ({time.time() - t:.1f}s)")
+
+        stage(f"epoch {epoch+1}: validation phase")
+        t = time.time()
+        try:
+            val_stats = validate(model, val_loader, loss_fn, device, scaler)
+        except Exception as e:
+            stage_err(f"validate failed at epoch {epoch+1}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            raise
+        stage(f"epoch {epoch+1}: val done  loss={val_stats['loss']:.4f}  "
+              f"({time.time() - t:.1f}s)")
 
         val_auc = roc_auc_score(val_stats['labels'], val_stats['probs'])
         val_preds = (val_stats['probs'] >= 0.5).astype(int)
@@ -238,15 +342,14 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
         writer.add_scalar('F1/Val', val_f1, epoch)
         writer.add_scalar('Cls/Train', train_stats['cls_loss'], epoch)
         writer.add_scalar('LEM/Train', train_stats['lem_loss'], epoch)
-        # FIXED (plan #7): separate scalar so flat warmup line is interpretable
         writer.add_scalar('LEM/active', lem_active, epoch)
 
         print(f"Train: Loss={train_stats['loss']:.4f}  "
               f"Cls={train_stats['cls_loss']:.4f}  "
-              f"LEM={train_stats['lem_loss']:.4f}")
+              f"LEM={train_stats['lem_loss']:.4f}", flush=True)
         print(f"Val:   Loss={val_stats['loss']:.4f}  AUC={val_auc:.4f}  "
               f"Precision={val_precision:.4f}  Recall={val_recall:.4f}  "
-              f"F1={val_f1:.4f}")
+              f"F1={val_f1:.4f}", flush=True)
 
         if val_auc > best_val_auc:
             best_val_auc = val_auc
@@ -259,14 +362,13 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
                 'val_auc': val_auc,
                 'config': config,
             }, os.path.join(experiment_dir, 'checkpoints', 'best_model.pth'))
-            print(f"  -> Saved best model (AUC: {val_auc:.4f})")
+            print(f"  -> Saved best model (AUC: {val_auc:.4f})", flush=True)
         else:
             patience_counter += 1
-            print(f"  -> No improvement ({patience_counter}/{config.training.early_stopping_patience})")
+            print(f"  -> No improvement ({patience_counter}/{config.training.early_stopping_patience})", flush=True)
 
-        # FIXED (plan #3.7): Early stopping
         if patience_counter >= config.training.early_stopping_patience:
-            print(f"Early stopping at epoch {epoch+1}")
+            print(f"Early stopping at epoch {epoch+1}", flush=True)
             break
 
         if (epoch + 1) % config.logging.save_interval == 0:
@@ -280,7 +382,7 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
             }, os.path.join(experiment_dir, 'checkpoints', f'epoch_{epoch+1}.pth'))
 
     writer.close()
-    print(f"\nTraining complete. Best val AUC: {best_val_auc:.4f}")
+    print(f"\n{_ts()} Training complete. Best val AUC: {best_val_auc:.4f}", flush=True)
 
 
 if __name__ == '__main__':
@@ -292,4 +394,14 @@ if __name__ == '__main__':
     parser.add_argument('--max_epochs', type=int, default=None,
                         help='Override training.epochs from the config (for smoke tests).')
     args = parser.parse_args()
-    main(args.config, args.exp_dir, args.resume, max_epochs=args.max_epochs)
+    try:
+        main(args.config, args.exp_dir, args.resume, max_epochs=args.max_epochs)
+    except SystemExit as e:
+        # argparse / sys.exit - normal flow
+        raise
+    except BaseException as e:
+        # Any other error: print a single, clear traceback and exit non-zero so
+        # the shell shows the failure instead of returning to the prompt.
+        stage_err(f"unhandled {type(e).__name__}: {e}")
+        traceback.print_exc()
+        sys.exit(1)
