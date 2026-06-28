@@ -46,7 +46,7 @@ loss:
 
 training:
   epochs: 50
-  warmup_epochs: 5
+  warmup_epochs: 2
   batch_size: 1  # MIL: one bag per batch
   learning_rate: 1e-4
   weight_decay: 1e-5
