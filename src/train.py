@@ -59,50 +59,39 @@ def train_epoch(model, dataloader, optimizer, loss_fn, device, scaler, gradient_
 
     pbar = tqdm(dataloader, desc="Training")
     for batch in pbar:
-        # batch['patches']['scale_*'] shape: [B, N, 1, H, W] where B=batch_size, N=patches/bag.
-        # MIL semantics: process each bag independently and accumulate loss.
-        batch_loss = 0.0
-        batch_cls = 0.0
-        batch_lem = 0.0
-        B = batch['label'].shape[0]
+        # batch['patches']['scale_*'] shape: [B, N, 1, H, W]. The model handles
+        # batching by reshaping to [B*N, ...] for the encoder and [B, N, D] for MIL.
+        patches_dict = {
+            'scale_0': batch['patches']['scale_0'].to(device),
+            'scale_1': batch['patches']['scale_1'].to(device),
+            'scale_2': batch['patches']['scale_2'].to(device),
+        }
         labels = batch['label'].to(device)
 
-        for b in range(B):
-            patches_dict = {
-                'scale_0': batch['patches']['scale_0'][b].to(device),
-                'scale_1': batch['patches']['scale_1'][b].to(device),
-                'scale_2': batch['patches']['scale_2'][b].to(device),
-            }
-            label_b = labels[b:b+1]
+        optimizer.zero_grad()
+        with autocast(enabled=scaler.is_enabled()):
+            outputs = model(patches_dict, return_feature_map=True)
+            logits = outputs['logits']
+            feature_map = outputs['feature_map']
+            loss, loss_dict = loss_fn(
+                logits, labels, feature_map, compute_lem=True
+            )
 
-            with autocast(enabled=scaler.is_enabled()):
-                outputs = model(patches_dict, return_feature_map=True)
-                logits = outputs['logits']
-                feature_map = outputs['feature_map']
-                loss_b, loss_dict = loss_fn(
-                    logits, label_b, feature_map, compute_lem=True
-                )
-
-            loss_b = loss_b / B
-            scaler.scale(loss_b).backward()
-            batch_loss += loss_b.item()
-            batch_cls += loss_dict['cls_loss'] / B
-            batch_lem += loss_dict['lem_loss'] / B
-
+        scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
         scaler.step(optimizer)
         scaler.update()
-        optimizer.zero_grad()
-        pbar.set_postfix({
-            'Loss': f"{batch_loss:.4f}",
-            'Cls': f"{batch_cls:.4f}",
-            'LEM': f"{batch_lem:.4f}",
-        })
 
-        total_loss += batch_loss
-        total_cls += batch_cls
-        total_lem += batch_lem
+        total_loss += loss.item()
+        total_cls += loss_dict['cls_loss']
+        total_lem += loss_dict['lem_loss']
+
+        pbar.set_postfix({
+            'Loss': f"{loss.item():.4f}",
+            'Cls': f"{loss_dict['cls_loss']:.4f}",
+            'LEM': f"{loss_dict['lem_loss']:.4f}",
+        })
 
     n = len(dataloader)
     return {
@@ -119,35 +108,31 @@ def validate(model, dataloader, loss_fn, device, scaler):
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Validation"):
+            patches_dict = {
+                'scale_0': batch['patches']['scale_0'].to(device),
+                'scale_1': batch['patches']['scale_1'].to(device),
+                'scale_2': batch['patches']['scale_2'].to(device),
+            }
             labels = batch['label'].to(device)
-            B = labels.shape[0]
 
-            for b in range(B):
-                patches_dict = {
-                    'scale_0': batch['patches']['scale_0'][b].to(device),
-                    'scale_1': batch['patches']['scale_1'][b].to(device),
-                    'scale_2': batch['patches']['scale_2'][b].to(device),
-                }
-                label_b = labels[b:b+1]
+            with autocast(enabled=scaler.is_enabled()):
+                outputs = model(patches_dict, return_feature_map=True)
+                logits = outputs['logits']
+                feature_map = outputs['feature_map']
+                # FIXED (plan #7): Disable LEM during validation
+                loss, loss_dict = loss_fn(
+                    logits, labels, feature_map, compute_lem=False
+                )
 
-                with autocast(enabled=scaler.is_enabled()):
-                    outputs = model(patches_dict, return_feature_map=True)
-                    logits = outputs['logits']
-                    feature_map = outputs['feature_map']
-                    # FIXED (plan #7): Disable LEM during validation
-                    loss, loss_dict = loss_fn(
-                        logits, label_b, feature_map, compute_lem=False
-                    )
-
-                total_loss += loss.item()
-                probs = torch.softmax(logits, dim=0)[1].cpu().numpy()
-                all_probs.append(probs)
-                all_labels.append(label_b.cpu().numpy())
+            total_loss += loss.item()
+            probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
+            all_probs.append(probs)
+            all_labels.append(labels.cpu().numpy())
 
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels).ravel()
 
-    n = max(1, len(all_labels))
+    n = len(dataloader)
     return {
         'loss': total_loss / n,
         'probs': all_probs,

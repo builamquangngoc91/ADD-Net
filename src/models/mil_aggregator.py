@@ -19,15 +19,22 @@ class AttentionMILAggregator(nn.Module):
     def forward(self, patch_features: torch.Tensor):
         """
         Args:
-            patch_features: [N, D] features for all patches in the bag
+            patch_features: [N, D] for one bag, or [B, N, D] for a batched bag stack.
         Returns:
-            logits:       [num_classes]
-            attn_weights: [N, 1]
+            logits:       [num_classes] or [B, num_classes]
+            attn_weights: [N, 1] or [B, N, 1]
         """
-        attn_scores = self.attention(patch_features)
-        attn_weights = F.softmax(attn_scores, dim=0)
+        if patch_features.dim() == 2:
+            attn_scores = self.attention(patch_features)            # [N, 1]
+            attn_weights = F.softmax(attn_scores, dim=0)            # [N, 1]
+            bag_feature = torch.sum(attn_weights * patch_features, dim=0)  # [D]
+            logits = self.classifier(bag_feature)                   # [num_classes]
+            return logits, attn_weights
 
-        bag_feature = torch.sum(attn_weights * patch_features, dim=0)
-        logits = self.classifier(bag_feature)
-
+        # Batched: [B, N, D]
+        B, N, D = patch_features.shape
+        attn_scores = self.attention(patch_features)                # [B, N, 1]
+        attn_weights = F.softmax(attn_scores, dim=1)                # [B, N, 1]
+        bag_feature = torch.sum(attn_weights * patch_features, dim=1)  # [B, D]
+        logits = self.classifier(bag_feature)                       # [B, num_classes]
         return logits, attn_weights

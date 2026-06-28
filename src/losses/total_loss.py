@@ -39,15 +39,17 @@ class TotalLoss(nn.Module):
     def forward(self, logits, labels, feature_map, compute_lem: bool = True):
         """
         Args:
-            logits:       [num_classes]
-            labels:       scalar
-            feature_map:  [C, H, W] or [B, C, H, W] (backbone feature map)
+            logits:       [num_classes] (single bag) or [B, num_classes] (batched)
+            labels:       scalar / [B] (must match logits' batch dim)
+            feature_map:  [C, H, W] / [N, C, H, W] / [B*N, C, H, W]
             compute_lem:  whether to compute LEM (False during validation)
         Returns:
             total_loss: scalar
             losses:     dict with individual losses for logging
         """
-        loss_cls = self.classification_loss(logits.unsqueeze(0), labels)
+        if logits.dim() == 1:
+            logits = logits.unsqueeze(0)
+        loss_cls = self.classification_loss(logits, labels)
 
         loss_lem = torch.tensor(0.0, device=logits.device)
         if compute_lem and self.current_epoch >= self.warmup_epoch:
