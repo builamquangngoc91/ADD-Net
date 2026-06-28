@@ -1,0 +1,70 @@
+# ============================================================
+# COMPLETE CONFIGURATION - MedIA Ready (All Fixes Applied)
+# ============================================================
+
+data:
+  root_dir: "./data/"
+  dataset: "cmmd"  # or "vindr"
+  raw_dir: "./CMD/"  # used to auto-build train.csv/val.csv when absent
+  image_size: 1024
+  # FIXED: stride=128 ensures all three scales produce the same N per bag.
+  # With image_size=1024, stride=128:
+  #   size=256: (1024-256)/128+1 = 7 -> N=49
+  #   size=128: (1024-128)/128+1 = 7 -> N=49
+  #   size=64:  (1024-64)/128+1  = 8 -> N=64
+  # With center-crop anchoring, all three align to the 49 anchor grid.
+  patch_sizes: [64, 128, 256]
+  patch_stride: 128
+  # Augmentation flags
+  augment: true
+  augment_bag_prob: 0.5
+  augment_patch_prob: 0.2
+
+preprocessing:
+  crop_margin: 50
+  otsu_threshold: 0.5
+  clahe_clip_limit: 2.0
+  clahe_grid_size: [8, 8]
+
+model:
+  backbone: "resnet50"
+  embed_dim: 512
+  num_heads: 8
+  mil_hidden_dim: 128
+  num_classes: 2
+  # Gradient checkpointing to save VRAM
+  use_checkpointing: true
+
+loss:
+  # Focal Loss for class imbalance (generalized to multi-class)
+  use_focal: true
+  focal_alpha: [0.75, 0.25]  # Per-class alpha; sum not required to be 1
+  focal_gamma: 2.0
+  lambda_lem: 0.05
+  lem_temperature: 0.1
+  epsilon: 1e-8
+
+training:
+  epochs: 50
+  warmup_epochs: 5
+  batch_size: 1  # MIL: one bag per batch
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  gradient_clip: 1.0
+  scheduler_patience: 5
+  scheduler_factor: 0.5
+  # Mixed precision training
+  use_amp: true
+  # Weighted sampler for class imbalance
+  use_weighted_sampler: true
+  early_stopping_patience: 10
+
+evaluation:
+  n_bootstrap: 1000
+  confidence_level: 0.95
+  random_seeds: [42, 123, 456, 789, 1010]
+
+logging:
+  log_interval: 10
+  save_interval: 5
+  tensorboard: true
