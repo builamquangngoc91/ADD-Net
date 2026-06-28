@@ -171,11 +171,11 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
 
     # FIXED (plan #3.7 from review): limit workers for Windows RAM safety
     train_loader = DataLoader(
-        train_dataset, batch_size=1, sampler=train_sampler, shuffle=shuffle,
+        train_dataset, batch_size=config.training.batch_size, sampler=train_sampler, shuffle=shuffle,
         num_workers=0, pin_memory=True,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=1, shuffle=False,
+        val_dataset, batch_size=config.training.batch_size, shuffle=False,
         num_workers=0, pin_memory=True,
     )
 
