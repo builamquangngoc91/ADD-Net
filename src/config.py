@@ -128,6 +128,13 @@ def load_config(config_path: str) -> Config:
         'otsu_threshold': float,
         'clahe_clip_limit': float,
     })
+    _coerce(raw.get('loss', {}), {
+        'use_focal': bool,
+        'focal_gamma': float,
+        'lambda_lem': float,
+        'lem_temperature': float,
+        'epsilon': float,
+    })
 
     return Config(
         data=DataConfig(**raw.get('data', {})),
