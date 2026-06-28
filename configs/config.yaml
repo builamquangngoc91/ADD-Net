@@ -40,17 +40,17 @@ loss:
   use_focal: true
   focal_alpha: [0.75, 0.25]  # Per-class alpha; sum not required to be 1
   focal_gamma: 2.0
-  lambda_lem: 0.001
+  lambda_lem: 0.0001
   lem_temperature: 0.1
   epsilon: 1e-8
 
 training:
   epochs: 50
-  warmup_epochs: 0
+  warmup_epochs: 5
   batch_size: 1  # MIL: one bag per batch
-  learning_rate: 1e-4
+  learning_rate: 5e-5
   weight_decay: 1e-5
-  gradient_clip: 1.0
+  gradient_clip: 0.5
   scheduler_patience: 5
   scheduler_factor: 0.5
   # Mixed precision training
