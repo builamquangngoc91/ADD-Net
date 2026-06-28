@@ -129,8 +129,8 @@ def validate(model, dataloader, loss_fn, device, scaler):
             all_probs.append(probs)
             all_labels.append(labels.cpu().numpy())
 
-    all_probs = np.array(all_probs)
-    all_labels = np.array(all_labels).ravel()
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.concatenate(all_labels).ravel()
 
     n = len(dataloader)
     return {
