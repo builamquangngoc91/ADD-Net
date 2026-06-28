@@ -26,7 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import numpy as np
 import random
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score
 
 from src.config import load_config
 from src.data.dataset import MammoMultiScaleDataset
@@ -222,6 +222,10 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
         val_stats = validate(model, val_loader, loss_fn, device, scaler)
 
         val_auc = roc_auc_score(val_stats['labels'], val_stats['probs'])
+        val_preds = (val_stats['probs'] >= 0.5).astype(int)
+        val_precision = precision_score(val_stats['labels'], val_preds, zero_division=0)
+        val_recall = recall_score(val_stats['labels'], val_preds, zero_division=0)
+        val_f1 = f1_score(val_stats['labels'], val_preds, zero_division=0)
         scheduler.step(val_stats['loss'])
 
         lem_active = 1.0 if epoch >= config.training.warmup_epochs else 0.0
@@ -229,6 +233,9 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
         writer.add_scalar('Loss/Train', train_stats['loss'], epoch)
         writer.add_scalar('Loss/Val', val_stats['loss'], epoch)
         writer.add_scalar('AUC/Val', val_auc, epoch)
+        writer.add_scalar('Precision/Val', val_precision, epoch)
+        writer.add_scalar('Recall/Val', val_recall, epoch)
+        writer.add_scalar('F1/Val', val_f1, epoch)
         writer.add_scalar('Cls/Train', train_stats['cls_loss'], epoch)
         writer.add_scalar('LEM/Train', train_stats['lem_loss'], epoch)
         # FIXED (plan #7): separate scalar so flat warmup line is interpretable
@@ -237,7 +244,9 @@ def main(config_path: str, experiment_dir: str, resume_path: str = None, max_epo
         print(f"Train: Loss={train_stats['loss']:.4f}  "
               f"Cls={train_stats['cls_loss']:.4f}  "
               f"LEM={train_stats['lem_loss']:.4f}")
-        print(f"Val:   Loss={val_stats['loss']:.4f}  AUC={val_auc:.4f}")
+        print(f"Val:   Loss={val_stats['loss']:.4f}  AUC={val_auc:.4f}  "
+              f"Precision={val_precision:.4f}  Recall={val_recall:.4f}  "
+              f"F1={val_f1:.4f}")
 
         if val_auc > best_val_auc:
             best_val_auc = val_auc
