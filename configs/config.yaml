@@ -68,3 +68,15 @@ logging:
   log_interval: 10
   save_interval: 5
   tensorboard: true
+  # Weights & Biases monitoring
+  wandb:
+    enabled: false                # set true to enable, or use --wandb CLI flag
+    project: "add-net"
+    entity: null                  # wandb username/team (null = your default)
+    name: null                    # run name (null = auto-generated from exp_dir)
+    mode: "online"                # "online" | "offline" | "disabled"
+    log_gradients: false          # logs per-layer grad histograms (heavy)
+    log_interval: 50              # batch-level log every N steps (0 = off)
+    watch_log: "gradients"        # "gradients" | "parameters" | "all"
+    watch_freq: 200               # log every N training steps (per wandb.watch docs)
+    tags: []                      # e.g. ["baseline", "cpu-debug"]

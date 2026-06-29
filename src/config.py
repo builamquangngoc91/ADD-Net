@@ -72,6 +72,7 @@ class LoggingConfig:
     log_interval: int = 10
     save_interval: int = 5
     tensorboard: bool = True
+    wandb: dict = field(default_factory=dict)  # dict from yaml; fields: enabled, project, entity, name, mode, log_gradients, log_interval, watch_log, watch_freq, tags
 
 
 @dataclass
